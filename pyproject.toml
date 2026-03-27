@@ -1,0 +1,13 @@
+[project]
+name = "vpn-payment-bot"
+version = "0.1.0"
+description = "Telegram bot for VPN subscription reminders and manual receipt review."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "python-dotenv>=1.0,<2.0",
+  "python-telegram-bot[job-queue]>=22.0,<23.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
