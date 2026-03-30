@@ -812,7 +812,6 @@ class VPNPaymentBot:
             f"Username: {username}",
             f"ID клиента: {self.client_code(customer.telegram_user_id)}",
             f"Telegram ID: {customer.telegram_user_id}",
-            f"Chat ID: {customer.chat_id if customer.chat_id is not None else 'неизвестен'}",
             f"Статус клиента: {state}",
             f"Срок: {format_expiry_status(customer.subscription_expires_on, self.today())}",
             f"Оплата: {self.payment_summary(customer)}",
