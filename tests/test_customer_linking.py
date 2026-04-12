@@ -194,6 +194,7 @@ def test_sync_command_scopes_for_admin_omits_whoami_and_updates_setdevices_descr
     admin_commands = application.bot.set_my_commands.await_args_list[1].args[0]
     assert ("whoami", "Показать chat_id и user_id") not in admin_commands
     assert ("setdevices", "Изменить число устройств клиента") in admin_commands
+    assert ("broadcast", "Разослать сообщение всем") in admin_commands
 
     db.close()
 
@@ -605,5 +606,60 @@ def test_extend_command_sends_customer_confirmation_with_line_break(tmp_path: Pa
     application_bot.send_message.assert_awaited()
     text = application_bot.send_message.await_args.kwargs["text"]
     assert "Платёж подтверждён ✅\nПодписка продлена." in text
+
+    db.close()
+
+
+def test_broadcast_command_copies_message_to_all_known_users_except_admin(tmp_path: Path) -> None:
+    database_path = tmp_path / "bot.sqlite3"
+    db = Database(database_path)
+    db.init()
+    bot = VPNPaymentBot(make_settings(database_path), db)
+
+    bot.sync_existing_customer(
+        user_id=1,
+        chat_id=1,
+        username="admin",
+        full_name="Admin Example",
+    )
+    linked = bot.sync_existing_customer(
+        user_id=123456,
+        chat_id=777,
+        username="alice",
+        full_name="Alice Example",
+    )
+    db.set_subscription_expiry(linked.telegram_user_id, date(2026, 4, 10))
+    bot.sync_existing_customer(
+        user_id=234567,
+        chat_id=888,
+        username="bob",
+        full_name="Bob Example",
+    )
+    removed = bot.sync_existing_customer(
+        user_id=345678,
+        chat_id=999,
+        username="charlie",
+        full_name="Charlie Example",
+    )
+    db.set_subscription_expiry(removed.telegram_user_id, date(2026, 4, 5))
+    db.deactivate_customer(removed.telegram_user_id)
+
+    reply_message = SimpleNamespace(copy=AsyncMock())
+    message = SimpleNamespace(reply_text=AsyncMock(), reply_to_message=reply_message)
+    update = SimpleNamespace(
+        effective_message=message,
+        effective_chat=SimpleNamespace(id=1),
+    )
+
+    asyncio.run(bot.broadcast_command(update, SimpleNamespace()))
+
+    copied_chat_ids = [call.kwargs["chat_id"] for call in reply_message.copy.await_args_list]
+    assert copied_chat_ids == [777, 888, 999]
+
+    result_text = message.reply_text.await_args.args[0]
+    assert "Рассылка завершена." in result_text
+    assert "Получателей: 3" in result_text
+    assert "Успешно: 3" in result_text
+    assert "Ошибок: 0" in result_text
 
     db.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, date, datetime
@@ -15,6 +16,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatType
+from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -96,6 +98,7 @@ class VPNPaymentBot:
         application.add_handler(CommandHandler("setname", self.setname_command))
         application.add_handler(CommandHandler("mutereceipts", self.mute_receipts_command))
         application.add_handler(CommandHandler("deleteclient", self.delete_client_command))
+        application.add_handler(CommandHandler("broadcast", self.broadcast_command))
         application.add_handler(CommandHandler("reject", self.reject_command))
         application.add_handler(CommandHandler("cancel", self.cancel_command))
         application.add_handler(CommandHandler("runreminders", self.run_reminders_command))
@@ -188,6 +191,7 @@ class VPNPaymentBot:
                     ("setname", "Имя для админа"),
                     ("mutereceipts", "Отключить приём чеков"),
                     ("deleteclient", "Удалить клиента"),
+                    ("broadcast", "Разослать сообщение всем"),
                     ("reject", "Отклонить чек"),
                     ("cancel", "Отменить ввод срока"),
                     ("runreminders", "Запустить напоминания"),
@@ -589,6 +593,7 @@ class VPNPaymentBot:
                 "/setname <client_id|user_id> <имя|-> - задать имя клиента для админа\n"
                 "/mutereceipts <client_id|user_id> <on|off> - включить или выключить прием чеков\n"
                 "/deleteclient <client_id|user_id> - убрать клиента из активных\n"
+                "/broadcast - ответом на сообщение разослать его всем пользователям\n"
                 "/reject <причина> - ответом на карточку чека отклонить оплату\n"
                 "/cancel - отменить ввод своего срока\n"
                 "/runreminders - запустить проверку напоминаний"
@@ -1166,6 +1171,21 @@ class VPNPaymentBot:
             return False
         return None
 
+    def retry_after_seconds(self, retry_after: Any) -> float:
+        if hasattr(retry_after, "total_seconds"):
+            return max(float(retry_after.total_seconds()), 1.0)
+        return max(float(retry_after), 1.0)
+
+    async def copy_message_with_retry(self, message: Message, *, chat_id: int, attempts: int = 3) -> None:
+        for attempt in range(attempts):
+            try:
+                await message.copy(chat_id=chat_id)
+                return
+            except RetryAfter as exc:
+                if attempt >= attempts - 1:
+                    raise
+                await asyncio.sleep(self.retry_after_seconds(exc.retry_after) + 0.5)
+
     async def mute_receipts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
         chat = update.effective_chat
@@ -1241,6 +1261,56 @@ class VPNPaymentBot:
             details="Клиент удален из активных, срок очищен.",
         )
         await message.reply_text(f"Клиент удален из активных: {self.customer_label(updated_customer)}")
+
+    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        chat = update.effective_chat
+        if message is None or chat is None or not self.is_admin_chat(chat.id):
+            return
+
+        source_message = message.reply_to_message
+        if source_message is None:
+            await message.reply_text(
+                "Ответьте командой /broadcast на сообщение в админ-чате, и бот разошлет его всем пользователям."
+            )
+            return
+
+        recipients = self.db.list_broadcast_recipients(exclude_chat_id=chat.id)
+        if not recipients:
+            await message.reply_text(
+                "Для рассылки пока нет получателей. Бот может писать только тем, кто уже открывал с ним диалог."
+            )
+            return
+
+        sent_count = 0
+        failed_count = 0
+        failed_labels: list[str] = []
+        for customer in recipients:
+            if customer.chat_id is None:
+                continue
+
+            try:
+                await self.copy_message_with_retry(source_message, chat_id=customer.chat_id)
+                sent_count += 1
+            except Exception as exc:
+                failed_count += 1
+                failed_labels.append(f"{self.client_code(customer.telegram_user_id)} ({exc})")
+                LOGGER.exception(
+                    "Failed to broadcast message to customer %s",
+                    customer.telegram_user_id,
+                )
+
+        lines = [
+            "Рассылка завершена.",
+            f"Получателей: {len(recipients)}",
+            f"Успешно: {sent_count}",
+            f"Ошибок: {failed_count}",
+        ]
+        if failed_labels:
+            lines.append("Не доставлено: " + ", ".join(failed_labels[:10]))
+            if len(failed_labels) > 10:
+                lines.append(f"И еще ошибок: {len(failed_labels) - 10}")
+        await message.reply_text("\n".join(lines))
 
     async def reject_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message

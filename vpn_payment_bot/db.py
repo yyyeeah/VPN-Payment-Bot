@@ -557,6 +557,30 @@ class Database:
             ).fetchall()
         return [_customer_from_row(row) for row in rows]
 
+    def list_broadcast_recipients(self, *, exclude_chat_id: int | None = None) -> list[Customer]:
+        with self._lock:
+            if exclude_chat_id is None:
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM customers
+                    WHERE chat_id IS NOT NULL
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT *
+                    FROM customers
+                    WHERE chat_id IS NOT NULL
+                      AND chat_id != ?
+                    ORDER BY id ASC
+                    """,
+                    (exclude_chat_id,),
+                ).fetchall()
+        return [_customer_from_row(row) for row in rows]
+
     def list_pending_receipts(self, limit: int = 20) -> list[Receipt]:
         with self._lock:
             rows = self._conn.execute(
